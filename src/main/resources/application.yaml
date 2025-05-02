@@ -1,0 +1,57 @@
+server:
+  port: 8081
+spring:
+  application:
+    name: hmdp
+  datasource:
+    driver-class-name: com.mysql.cj.jdbc.Driver
+    url: jdbc:mysql://localhost:3306/hmdp?useSSL=false&serverTimezone=UTC
+    username: root
+    password: ace123456
+  jackson:
+    default-property-inclusion: non_null # JSON处理时忽略非空字段
+  data:
+    redis:
+      host: localhost
+      port: 6379
+      password: 123321
+      lettuce:
+        pool:
+          max-active: 10
+          max-idle: 10
+          min-idle: 1
+          time-between-eviction-runs: 10s
+  rabbitmq:
+    username: hmdp
+    password: hmdp
+    host: localhost
+    port: 5672
+    publisher-confirm-type: correlated # 发布者确认模式设置为 correlated，这意味着发布者会收到一个确认消息，表明消息已被 RabbitMQ 服务器接收。
+    publisher-returns: true # 启用发布者返回模式，如果消息无法路由到队列，发布者会收到一个返回消息。
+    listener:
+      simple:
+        concurrency: 1
+        max-concurrency: 1
+        acknowledge-mode: manual
+        prefetch: 1
+  task:
+    execution:
+      pool:
+        allow-core-thread-timeout: false
+        core-size: 10
+        max-size: 20
+        keep-alive: 60s
+        queue-capacity: 400
+        shutdown:
+          accept-tasks-after-context-close: false
+      thread-name-prefix: order-task-
+mybatis-plus:
+  type-aliases-package: com.hmdp.entity # 别名扫描包
+logging:
+  level:
+    com.hmdp: debug
+custom:
+  expectedInsertions: 100000
+  fpp: 0.0001
+  cache:
+
