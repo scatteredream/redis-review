@@ -87,7 +87,7 @@ public class VoucherOrderServiceImpl extends ServiceImpl<VoucherOrderMapper, Vou
         rabbitTemplate.setMandatory(true);
     }
     //获取代理对象.方便执行事务方法
-    private final IVoucherOrderService proxy = (IVoucherOrderService) AopContext.currentProxy();
+    private IVoucherOrderService proxy;
     //订单的阻塞队列与处理订单的线程池
 //    private final BlockingQueue<VoucherOrder> orderTasks = new ArrayBlockingQueue<>(1024*1024);
 //    private static final ExecutorService ORDER_EXECUTOR = Executors.newSingleThreadExecutor();

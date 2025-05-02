@@ -53,5 +53,5 @@ logging:
 custom:
   expectedInsertions: 100000
   fpp: 0.0001
-  cache:
+  cache: bloom
 

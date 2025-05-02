@@ -50,7 +50,7 @@ public class ShopServiceImpl extends ServiceImpl<ShopMapper, Shop> implements IS
     @Resource
     private BloomFilter<Long> bloomFilter;
 
-    @Value("${custom.cache:bloom}")
+    @Value("${custom.cache}")
     private String methodName;
 
     @PostConstruct
