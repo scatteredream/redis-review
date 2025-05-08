@@ -12,6 +12,7 @@ import com.hmdp.utils.RedisIdWorker;
 import com.hmdp.utils.UserHolder;
 import jakarta.annotation.PostConstruct;
 import jakarta.annotation.Resource;
+import lombok.SneakyThrows;
 import lombok.extern.slf4j.Slf4j;
 import org.redisson.api.RLock;
 import org.redisson.api.RedissonClient;
@@ -31,6 +32,9 @@ import java.time.LocalDateTime;
 import java.util.Arrays;
 import java.util.List;
 import java.util.Map;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.Future;
 
 import static com.hmdp.utils.RedisConstants.*;
 
@@ -86,11 +90,11 @@ public class VoucherOrderServiceImpl extends ServiceImpl<VoucherOrderMapper, Vou
         });
         rabbitTemplate.setMandatory(true);
     }
-    //获取代理对象.方便执行事务方法
 
     @Autowired
     private IVoucherOrderService proxy;
 
+    private final ExecutorService executorService = Executors.newFixedThreadPool(1);
     /**
      * 判断是否有下单资格,解决了超卖和一人一单的问题
      * <p>创建订单并加入阻塞队列等待线程执行</p>
@@ -98,7 +102,7 @@ public class VoucherOrderServiceImpl extends ServiceImpl<VoucherOrderMapper, Vou
      * @param voucherId 秒杀券ID
      */
     @Override
-    public Result secKillOrder(Long voucherId) {
+    public Result secKillOrderLuaScript(Long voucherId) {
         Long orderId = redisIdWorker.nextId(ORDER_KEY_PREFIX);
         Long userId = UserHolder.getUser().getId();
         //result:执行lua脚本 redis是单线程 所以不用担心线程安全问题
@@ -165,9 +169,9 @@ public class VoucherOrderServiceImpl extends ServiceImpl<VoucherOrderMapper, Vou
      *
      * @param voucherId 秒杀券ID
      */
-    @Deprecated
+    @SneakyThrows
     @Override
-    public Result secKillVoucherOrder(Long voucherId) {
+    public Result secKillOrderRedisson(Long voucherId) {
         // 查数据库
         SeckillVoucher secKillVoucher = secKillVoucherService.getById(voucherId);
         LocalDateTime beginTime = secKillVoucher.getBeginTime();
@@ -186,26 +190,27 @@ public class VoucherOrderServiceImpl extends ServiceImpl<VoucherOrderMapper, Vou
         //在事务外面加锁
         Long userId = UserHolder.getUser().getId();
 //        ILock myLock = new SimpleLockImpl(ORDER_KEY_PREFIX + userId, stringRedisTemplate);
-        RLock lock = redissonClient.getLock(ORDER_KEY_PREFIX + userId);
-        if (!lock.tryLock()) {
-            return Result.fail("您抢得太快啦,请稍事休息再来");
-        }
-        try {
-            return proxy.createVoucherOrder(voucherId);
-        } finally {
-            lock.unlock();
-        }
+        Future<Result> submit = executorService.submit(() -> {
+            RLock lock = redissonClient.getLock(ORDER_KEY_PREFIX + userId);
 
-
-
-/*
+            if (!lock.tryLock()) {
+                return Result.fail("您抢得太快啦,请稍事休息再来");
+            }
+            try {
+                return proxy.createOrderById(voucherId);
+            } finally {
+                lock.unlock();
+            }
+    /*
         不适合集群和分布式应用
         synchronized (userId.toString().intern()) {
             //开启事务要用代理对象
             IVoucherOrderService proxy = (IVoucherOrderService)AopContext.currentProxy();
             return proxy.handleVoucherOrder(voucherId);
         }
-*/
+        */
+        });
+        return submit.get();
     }
 
     /**
@@ -214,27 +219,15 @@ public class VoucherOrderServiceImpl extends ServiceImpl<VoucherOrderMapper, Vou
      *
      * @param voucherId 秒杀券ID
      */
-    @Deprecated
     @Override
     @Transactional(rollbackFor = Exception.class)//自己是一个事务
-    public Result createVoucherOrder(Long voucherId) {
-        //在订单表中查询用户id,如果id存在,则返回失败结果
-        //查id和最后的save订单操作实际上是分离开的,并发情况下肯定会出现线程安全问题
-        //插入数据是无法用乐观锁实现的,所以得用悲观锁synchronized
-        //锁粒度太大,不同的用户用的都是同一把锁,影响并发性能,所以不能用this作为锁
-        //面对同一个用户,多个线程, 最好的方法是使用 用户id 作为锁
-        //再进行一人一单的校验
+    public Result createOrderById(Long voucherId) {
         Long userId = UserHolder.getUser().getId();
         Long count = query().eq("user_id", userId)
                 .eq("voucher_id", voucherId).count();
         if (count > 0) {
             return Result.fail("已经抢过此限量优惠券了");
         }
-
-        //乐观锁核心: stock和之前相等才更新 问题: 如果两个线程发生了冲突,必定有一个会失败
-        //库存比较特殊可以并发扣减, stock > 0 就可以更新
-        //如果要求真正的乐观锁,可以把数据分到多个数据库里(concurrentHashMap）成倍地提高成功率
-        //如果没有数据库的锁,多个线程可以同时对数据进行修改,直接影响业务层
         boolean success = secKillVoucherService.update()
                 .setSql("stock = stock - 1")
                 .eq("voucher_id", voucherId)
@@ -339,12 +332,12 @@ public class VoucherOrderServiceImpl extends ServiceImpl<VoucherOrderMapper, Vou
         /**
          * 分布式锁 进行一个兜底 (optional)
          *
-         * @param voucherOrder 预先创建好的订单对象
+         * @param order 预先创建好的订单对象
          */
         @Deprecated
-        private void handleVoucherOrder(VoucherOrder voucherOrder) {
+        private void handleVoucherOrder(VoucherOrder order) {
             //1.获取用户 todo 注意是从order中取用户id
-            Long userId = voucherOrder.getUserId();
+            Long userId = order.getUserId();
             // 2.创建锁对象
             RLock redisLock = redissonClient.getLock("lock:order:" + userId);
             // 3.尝试获取锁
@@ -358,7 +351,7 @@ public class VoucherOrderServiceImpl extends ServiceImpl<VoucherOrderMapper, Vou
             try {
                 //异步持久化到数据库
                 //注意：由于是spring的事务是放在threadLocal中，此时的是多线程，事务会失效
-                proxy.createOrder(voucherOrder);
+                proxy.createOrder(order);
             } finally {
                 // 释放锁
                 redisLock.unlock();

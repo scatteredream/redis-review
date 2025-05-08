@@ -13,11 +13,11 @@ import com.hmdp.entity.VoucherOrder;
  * @since 2021-12-22
  */
 public interface IVoucherOrderService extends IService<VoucherOrder> {
-    Result secKillOrder(Long voucherId);
+    Result secKillOrderLuaScript(Long voucherId);
 
-    Result secKillVoucherOrder(Long voucherId);
+    Result secKillOrderRedisson(Long voucherId);
 
-    Result createVoucherOrder(Long voucherId);
+    Result createOrderById(Long voucherId);
 
     boolean createOrder(VoucherOrder order);
 }
