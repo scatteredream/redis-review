@@ -1,21 +1,27 @@
 package com.hmdp.config;
 
 
+import com.hmdp.entity.FailedVoucherOrder;
 import com.hmdp.entity.VoucherOrder;
+import com.hmdp.service.IFailedVoucherOrderService;
 import com.hmdp.service.IVoucherOrderService;
 import com.rabbitmq.client.Channel;
 import jakarta.annotation.Resource;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.amqp.core.Message;
-import org.springframework.amqp.rabbit.annotation.Exchange;
-import org.springframework.amqp.rabbit.annotation.Queue;
-import org.springframework.amqp.rabbit.annotation.QueueBinding;
-import org.springframework.amqp.rabbit.annotation.RabbitListener;
-import org.springframework.amqp.rabbit.core.RabbitTemplate;
+import org.springframework.amqp.rabbit.annotation.*;
 import org.springframework.context.annotation.Lazy;
+import org.springframework.core.io.ClassPathResource;
+import org.springframework.data.redis.core.StringRedisTemplate;
+import org.springframework.data.redis.core.script.DefaultRedisScript;
 import org.springframework.scheduling.concurrent.ThreadPoolTaskExecutor;
 import org.springframework.stereotype.Component;
+
 import java.io.IOException;
+import java.util.Arrays;
+
+import static com.hmdp.utils.RedisConstants.SECKILL_ORDER_PREFIX;
+import static com.hmdp.utils.RedisConstants.SECKILL_STOCK_PREFIX;
 
 
 @Component
@@ -24,17 +30,32 @@ public class RabbitMQListener {
     @Resource
     @Lazy
     private IVoucherOrderService voucherOrderService;
+    
+    @Resource
+    private IFailedVoucherOrderService failedVoucherOrderService;
 
     @Resource
     private ThreadPoolTaskExecutor orderTaskExecutor;
 
     @Resource
-    private RabbitTemplate rabbitTemplate;
+    private StringRedisTemplate stringRedisTemplate;
+
+    private static final DefaultRedisScript<Long> ROLLBACK_SCRIPT;
+
+    static {
+        ROLLBACK_SCRIPT = new DefaultRedisScript<>();
+        ROLLBACK_SCRIPT.setLocation(new ClassPathResource("rollback_secKill.lua"));
+        ROLLBACK_SCRIPT.setResultType(Long.class);
+    }
 
     @RabbitListener(bindings = @QueueBinding(
             value = @Queue(
                     name = "direct.seckill.queue",
-                    durable = "true"
+                    durable = "true",
+                    arguments = {
+                            @Argument(name = "x-dead-letter-exchange", value = "hmdianping.dlx"),
+                            @Argument(name = "x-dead-letter-routing-key", value = "dlx.seckill")
+                    }
             ),
             key = "direct.seckill",
             exchange = @Exchange(name = "hmdianping.direct")
@@ -44,21 +65,21 @@ public class RabbitMQListener {
             log.info("收到订单: {}", voucherOrder);
             Object header = message.getMessageProperties().getHeader("retry-count");
             int retry = Integer.parseInt((String) header);
-            if(retry > 3){
-                log.error("订单处理失败，超过最大重试次数: 3  {}", voucherOrder);
-                log.warn("发送到延迟队列...{}",voucherOrder);
-                message.getMessageProperties().setHeader("retry-count", "0");
-                rabbitTemplate.send("delay.seckill", "delay.seckill", message);
-                log.warn("发送完成 {}",voucherOrder);
-                return;
-            }
             try{
-                boolean success = voucherOrderService.createVoucherOrderAsync(voucherOrder);
+                if(retry > 3){
+                    log.error("订单处理失败，超过最大重试次数: 3  {}", voucherOrder);
+                    log.warn("发送到死信队列...{}",voucherOrder);
+                    message.getMessageProperties().setHeader("retry-count", "0");
+                    channel.basicReject(message.getMessageProperties().getDeliveryTag(), false);
+                    log.warn("发送完成 {}",voucherOrder);
+                    return;
+                }
+                boolean success = voucherOrderService.createOrder(voucherOrder);
                 if(success){
                     channel.basicAck(message.getMessageProperties().getDeliveryTag(), false);
                 }
                 else
-                    throw new RuntimeException("数据库处理异常");
+                    throw new RuntimeException("数据库处理异常!");
             } catch (Exception e) {
                 log.error("处理订单失败,准备重试: {}", voucherOrder, e);
                 try {
@@ -71,15 +92,22 @@ public class RabbitMQListener {
             }
         });
     }
-    @RabbitListener(queues = "delay.seckill.queue")
+    @RabbitListener(queues = "dlx.seckill.queue")
     public void handleFailedMessage(Message message, Channel channel, VoucherOrder voucherOrder) {
-        log.error("订单处理失败，进入延迟队列: {}", voucherOrder);
+        log.error("订单处理失败，进入死信队列: {}", voucherOrder);
         // 处理死信消息，如记录日志、通知人工干预等
         try {
+            Long userId = voucherOrder.getUserId();
+            Long voucherId = voucherOrder.getVoucherId();
             // 示例：记录到数据库或发送警报
-            channel.basicReject(message.getMessageProperties().getDeliveryTag(), false);
+            stringRedisTemplate.execute(ROLLBACK_SCRIPT,
+                    Arrays.asList(SECKILL_STOCK_PREFIX, SECKILL_ORDER_PREFIX),
+                    voucherId.toString(), userId.toString()
+            );
+            orderTaskExecutor.submit(()->failedVoucherOrderService.save((FailedVoucherOrder) voucherOrder));// 落库
+            channel.basicAck(message.getMessageProperties().getDeliveryTag(), false);
         } catch (IOException e) {
-            log.error("订单重路由失败: {}", voucherOrder, e);
+            log.error("订单ack失败: {}", voucherOrder, e);
         }
     }
 }
