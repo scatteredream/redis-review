@@ -18,7 +18,7 @@ import org.redisson.api.RedissonClient;
 import org.springframework.amqp.core.MessageDeliveryMode;
 import org.springframework.amqp.rabbit.connection.CorrelationData;
 import org.springframework.amqp.rabbit.core.RabbitTemplate;
-import org.springframework.aop.framework.AopContext;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.core.io.ClassPathResource;
 import org.springframework.data.redis.connection.stream.*;
 import org.springframework.data.redis.core.StringRedisTemplate;
@@ -28,11 +28,11 @@ import org.springframework.transaction.annotation.Transactional;
 
 import java.time.Duration;
 import java.time.LocalDateTime;
-import java.util.Collections;
+import java.util.Arrays;
 import java.util.List;
 import java.util.Map;
 
-import static com.hmdp.utils.RedisConstants.ORDER_KEY_PREFIX;
+import static com.hmdp.utils.RedisConstants.*;
 
 
 /**
@@ -87,15 +87,9 @@ public class VoucherOrderServiceImpl extends ServiceImpl<VoucherOrderMapper, Vou
         rabbitTemplate.setMandatory(true);
     }
     //获取代理对象.方便执行事务方法
+
+    @Autowired
     private IVoucherOrderService proxy;
-    //订单的阻塞队列与处理订单的线程池
-//    private final BlockingQueue<VoucherOrder> orderTasks = new ArrayBlockingQueue<>(1024*1024);
-//    private static final ExecutorService ORDER_EXECUTOR = Executors.newSingleThreadExecutor();
-    // bean创建之后将更新数据库的任务提交到线程池
-//    @PostConstruct
-//    private void init() {
-//        ORDER_EXECUTOR.submit(new VoucherOrderHandler());
-//    }
 
     /**
      * 判断是否有下单资格,解决了超卖和一人一单的问题
@@ -109,10 +103,9 @@ public class VoucherOrderServiceImpl extends ServiceImpl<VoucherOrderMapper, Vou
         Long userId = UserHolder.getUser().getId();
         //result:执行lua脚本 redis是单线程 所以不用担心线程安全问题
         Long result = stringRedisTemplate.execute(SECKILL_SCRIPT,
-                Collections.emptyList(),
+                Arrays.asList(SECKILL_STOCK_PREFIX,SECKILL_ORDER_PREFIX),
                 voucherId.toString(),
-                userId.toString(),
-                orderId.toString());
+                userId.toString());
         assert result != null;
         int r = result.intValue();// TODO 判断是否有下单的资格
         if (r != 0) {
@@ -142,7 +135,7 @@ public class VoucherOrderServiceImpl extends ServiceImpl<VoucherOrderMapper, Vou
      */
     @Transactional(rollbackFor = Exception.class)
     @Override
-    public boolean createVoucherOrderAsync(VoucherOrder order) {
+    public boolean createOrder(VoucherOrder order) {
         Long userId = order.getUserId();
         Long voucherId = order.getVoucherId();
         Long count = query().eq("user_id", userId)
@@ -291,7 +284,7 @@ public class VoucherOrderServiceImpl extends ServiceImpl<VoucherOrderMapper, Vou
                     VoucherOrder voucherOrder = BeanUtil.fillBeanWithMap(value, new VoucherOrder(), true);
                     // 3.创建订单
 //                    handleVoucherOrder(voucherOrder);
-                    proxy.createVoucherOrderAsync(voucherOrder);
+                    proxy.createOrder(voucherOrder);
                     // 4.确认消息 XACK
                     stringRedisTemplate.opsForStream().acknowledge("s1", "g1", record.getId());
                 } catch (Exception e) {
@@ -328,7 +321,7 @@ public class VoucherOrderServiceImpl extends ServiceImpl<VoucherOrderMapper, Vou
                     VoucherOrder voucherOrder = BeanUtil.fillBeanWithMap(value, new VoucherOrder(), true);
                     // 3.创建订单
 //                    handleVoucherOrder(voucherOrder);
-                    proxy.createVoucherOrderAsync(voucherOrder);
+                    proxy.createOrder(voucherOrder);
                     // 4.确认消息 XACK
                     stringRedisTemplate.opsForStream().acknowledge("s1", "g1", record.getId());
                 } catch (Exception e) {
@@ -365,7 +358,7 @@ public class VoucherOrderServiceImpl extends ServiceImpl<VoucherOrderMapper, Vou
             try {
                 //异步持久化到数据库
                 //注意：由于是spring的事务是放在threadLocal中，此时的是多线程，事务会失效
-                proxy.createVoucherOrderAsync(voucherOrder);
+                proxy.createOrder(voucherOrder);
             } finally {
                 // 释放锁
                 redisLock.unlock();

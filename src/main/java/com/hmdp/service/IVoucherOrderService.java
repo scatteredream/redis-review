@@ -19,5 +19,5 @@ public interface IVoucherOrderService extends IService<VoucherOrder> {
 
     Result createVoucherOrder(Long voucherId);
 
-    boolean createVoucherOrderAsync(VoucherOrder order);
+    boolean createOrder(VoucherOrder order);
 }
