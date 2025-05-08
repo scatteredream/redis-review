@@ -1,3 +1,7 @@
+-- 0. 键列表
+local stockPrefix = KEYS[1]
+
+local orderPrefix = KEYS[2]
 -- 1.参数列表
 -- 1.1.优惠券id
 local voucherId = ARGV[1]
@@ -8,9 +12,9 @@ local userId = ARGV[2]
 
 -- 2.数据key
 -- 2.1.库存key
-local stockKey = 'seckill:stock:' .. voucherId
+local stockKey = stockPrefix .. "{" .. voucherId .."}"
 -- 2.2.订单key
-local orderKey = 'seckill:order:' .. voucherId
+local orderKey = orderPrefix .. "{" .. voucherId .."}"
 
 -- 3.脚本业务
 --TODO 防止超卖 3.1.判断库存是否充足 get stockKey
