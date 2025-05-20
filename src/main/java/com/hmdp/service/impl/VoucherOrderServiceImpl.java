@@ -8,6 +8,7 @@ import com.hmdp.entity.VoucherOrder;
 import com.hmdp.mapper.VoucherOrderMapper;
 import com.hmdp.service.ISeckillVoucherService;
 import com.hmdp.service.IVoucherOrderService;
+import com.hmdp.utils.OrderStatus;
 import com.hmdp.utils.RedisIdWorker;
 import com.hmdp.utils.UserHolder;
 import jakarta.annotation.PostConstruct;
@@ -32,6 +33,7 @@ import java.time.LocalDateTime;
 import java.util.Arrays;
 import java.util.List;
 import java.util.Map;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.Future;
@@ -95,6 +97,9 @@ public class VoucherOrderServiceImpl extends ServiceImpl<VoucherOrderMapper, Vou
     private IVoucherOrderService proxy;
 
     private final ExecutorService executorService = Executors.newFixedThreadPool(1);
+
+    public Map<Long, OrderStatus> orderStatus = new ConcurrentHashMap<>();
+
     /**
      * 判断是否有下单资格,解决了超卖和一人一单的问题
      * <p>创建订单并加入阻塞队列等待线程执行</p>
@@ -127,6 +132,8 @@ public class VoucherOrderServiceImpl extends ServiceImpl<VoucherOrderMapper, Vou
                     },
                 new CorrelationData("orderId-"+orderId)
         );
+        // 将订单状态存到 OrderStatus 内存中
+        orderStatus.putIfAbsent(orderId, OrderStatus.PENDING);
         return Result.ok(orderId);
     }
 
@@ -162,6 +169,26 @@ public class VoucherOrderServiceImpl extends ServiceImpl<VoucherOrderMapper, Vou
             return false;
         }
         return save(order);
+    }
+
+    @Override
+    public OrderStatus getOrderStatus(Long orderId) {
+        if(orderId == null) {
+            return null;
+        }
+        OrderStatus status = orderStatus.get(orderId);
+        if(status == OrderStatus.PENDING) {
+            return OrderStatus.PENDING;
+        }
+        // 如果是 成功 或者 失败 就删除并返回(防止内存溢出)
+        // 可以继承map做一个ttlMap, 定时任务清除已经过期的条目.
+        return orderStatus.remove(orderId);
+    }
+
+    @Override
+    public void setOrderStatus(Long orderId, OrderStatus status) {
+        orderStatus.putIfAbsent(orderId, status);
+        return;
     }
 
     /**

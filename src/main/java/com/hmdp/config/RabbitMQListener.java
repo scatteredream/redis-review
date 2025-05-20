@@ -5,6 +5,7 @@ import com.hmdp.entity.FailedVoucherOrder;
 import com.hmdp.entity.VoucherOrder;
 import com.hmdp.service.IFailedVoucherOrderService;
 import com.hmdp.service.IVoucherOrderService;
+import com.hmdp.utils.OrderStatus;
 import com.rabbitmq.client.Channel;
 import jakarta.annotation.Resource;
 import lombok.extern.slf4j.Slf4j;
@@ -77,6 +78,8 @@ public class RabbitMQListener {
                 boolean success = voucherOrderService.createOrder(voucherOrder);
                 if(success){
                     channel.basicAck(message.getMessageProperties().getDeliveryTag(), false);
+                    // 成功,设置订单状态
+                    voucherOrderService.setOrderStatus(voucherOrder.getId(), OrderStatus.SUCCESS);
                 }
                 else
                     throw new RuntimeException("数据库处理异常!");
@@ -104,6 +107,8 @@ public class RabbitMQListener {
                     Arrays.asList(SECKILL_STOCK_PREFIX, SECKILL_ORDER_PREFIX),
                     voucherId.toString(), userId.toString()
             );
+            // 设置订单状态为失败
+            voucherOrderService.setOrderStatus(voucherOrder.getId(), OrderStatus.FAILED);
             orderTaskExecutor.submit(()->failedVoucherOrderService.save((FailedVoucherOrder) voucherOrder));// 落库
             channel.basicAck(message.getMessageProperties().getDeliveryTag(), false);
         } catch (IOException e) {
